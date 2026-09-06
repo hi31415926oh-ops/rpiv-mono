@@ -53,6 +53,18 @@ export interface PreviewBlockRendererConfig {
 export class PreviewBlockRenderer {
 	private readonly theme: Theme;
 	private readonly cache: MarkdownContentCache;
+	/**
+	 * The scroll offset most recently used by `renderBlock` after clamping to the real
+	 * overflow (0 when the last render had no overflow). Read by `PreviewPane` so the
+	 * session can re-sync its canonical `previewScroll` to the actually rendered offset.
+	 */
+	lastClampedScroll = 0;
+	/**
+	 * Total overflow rows (content rows above the budget) of the last rendered block,
+	 * 0 when the last render fit. Read together with `lastClampedScroll` by the session
+	 * so PageDown can clamp to the real scrollable range (no phantom overscroll).
+	 */
+	lastTotalHidden = 0;
 
 	constructor(config: PreviewBlockRendererConfig) {
 		this.theme = config.theme;
@@ -109,6 +121,8 @@ export class PreviewBlockRenderer {
 		const raw = this.cache.bodyFor(optionIndex, maxInnerWidth);
 		const totalHidden = Math.max(0, raw.length - contentBudget);
 		const offset = totalHidden > 0 ? Math.max(0, Math.min(scrollOffset, totalHidden)) : 0;
+		this.lastClampedScroll = offset;
+		this.lastTotalHidden = totalHidden;
 		const contentLines = totalHidden > 0 ? raw.slice(offset, offset + contentBudget) : raw;
 		const canUp = offset > 0;
 		const canDown = offset < totalHidden;
