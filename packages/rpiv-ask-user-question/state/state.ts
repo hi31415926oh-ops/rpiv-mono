@@ -69,5 +69,12 @@ export interface QuestionnaireRuntime {
 	 * from `AskUserQuestionConfig.collapseKey` (or the package default). When `"off"`,
 	 * the collapse shortcut is disabled.
 	 */
+	/**
+	 * Max scrollable rows of the focused option’s preview (last rendered frame’s total
+	 * overflow; undefined when no preview overflow was rendered for the focused row).
+	 * Lets PageDown snap to the real bottom instead of overscrolling into phantom rows.
+	 */
+	previewMaxScroll: number | undefined;
+
 	collapseKey: string;
 }
