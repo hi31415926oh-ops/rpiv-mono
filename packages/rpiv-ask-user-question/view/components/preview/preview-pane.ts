@@ -55,6 +55,11 @@ export interface PreviewPaneProps {
 	 * early-returns below so the inline input isn't cramped into the narrow left column.
 	 */
 	inputMode: boolean;
+	/**
+	 * Scroll offset inside the focused option's preview block (rows). Optional for
+	 * construction-time compatibility — absent means "from the top" (offset 0).
+	 */
+	previewScroll?: number;
 }
 
 export interface PreviewPaneConfig {
@@ -96,7 +101,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		this.getTerminalWidth = config.getTerminalWidth;
 		this.optionListView = config.optionListView;
 		this.previewBlock = config.previewBlock;
-		this.props = { notesVisible: false, selectedIndex: 0, focused: false, inputMode: false };
+		this.props = { notesVisible: false, selectedIndex: 0, focused: false, inputMode: false, previewScroll: 0 };
 	}
 
 	setGlobalLeftWidth(getter: (paneWidth: number) => number): void {
@@ -141,6 +146,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 				mode,
 				this.props.focused,
 				this.props.notesVisible,
+				this.props.previewScroll ?? 0,
 			),
 		];
 	}
@@ -196,7 +202,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		const adaptiveLeft = this.getAdaptiveLeft(width);
 		const { leftWidth, rightWidth, gap } = columnWidths(width, adaptiveLeft);
 		const leftLines = this.optionListView.render(leftWidth);
-		const rightLines = this.renderPaddedPreviewLines(rightWidth, mode);
+		const rightLines = this.renderPaddedPreviewLines(rightWidth, mode, this.props.previewScroll ?? 0);
 		const rows = Math.max(leftLines.length, rightLines.length);
 		const gapStr = " ".repeat(gap);
 		const out: string[] = [];
@@ -211,7 +217,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		return out;
 	}
 
-	private renderPaddedPreviewLines(colWidth: number, mode: PreviewLayoutMode): string[] {
+	private renderPaddedPreviewLines(colWidth: number, mode: PreviewLayoutMode, scrollOffset: number): string[] {
 		const inner = Math.max(1, colWidth - PREVIEW_PADDING_LEFT);
 		const contentLines = this.previewBlock.renderBlock(
 			inner,
@@ -219,6 +225,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 			mode,
 			this.props.focused,
 			this.props.notesVisible,
+			scrollOffset,
 		);
 		const boxWidth = Math.max(1, visibleWidth(contentLines[0] ?? ""));
 		const boxAlignedPad = Math.max(PREVIEW_PADDING_LEFT, colWidth - boxWidth);
