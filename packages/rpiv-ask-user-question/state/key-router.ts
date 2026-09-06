@@ -376,10 +376,22 @@ export function routeKey(data: string, state: QuestionnaireState, runtime: Quest
 	// a preview that fits, simply leaves `previewScroll` clamped at 0 by the reducer.
 	if (!q.multiSelect) {
 		if (matchesKey(data, Key.pageUp)) {
+			// State only ever decreases toward 0 (clamped by the reducer), so PageUp can
+			// never overscroll — a plain step is enough.
 			return { kind: "preview_scroll", delta: -PREVIEW_SCROLL_STEP };
 		}
 		if (matchesKey(data, Key.pageDown)) {
-			return { kind: "preview_scroll", delta: PREVIEW_SCROLL_STEP };
+			// Snap to the rendered bottom: when the last frame reported the focused preview’s
+			// total overflow, step at most that far past the current offset. Reaching the end
+			// swallows further PageDown presses (delta <= 0), so no phantom rows accumulate
+			// and the next PageUp responds immediately.
+			const max = runtime.previewMaxScroll;
+			const delta =
+				max === undefined
+					? PREVIEW_SCROLL_STEP
+					: Math.min(PREVIEW_SCROLL_STEP, Math.max(0, max - state.previewScroll));
+			if (delta <= 0) return { kind: "ignore" };
+			return { kind: "preview_scroll", delta };
 		}
 	}
 
