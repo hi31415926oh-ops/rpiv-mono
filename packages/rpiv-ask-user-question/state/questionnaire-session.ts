@@ -51,6 +51,7 @@ function initialState(): QuestionnaireState {
 		submitChoiceIndex: 0,
 		notesDraft: "",
 		collapsed: false,
+		previewScroll: 0,
 	};
 }
 
