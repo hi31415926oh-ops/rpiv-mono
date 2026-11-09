@@ -1161,15 +1161,16 @@ describe("routeKey — preview scroll keys", () => {
 	it("PageDown clamps to the last frame's previewMaxScroll instead of overshooting", () => {
 		// previewScroll=8, reported max=12 → only 4 rows actually remain; PageDown
 		// moves those 4 instead of stepping 10 into phantom rows (#210).
-		expect(
-			routeKey(BYTE_PAGEDOWN, makeState({ previewScroll: 8 }), makeRuntime({ previewMaxScroll: 12 })),
-		).toEqual({ kind: "preview_scroll", delta: 4 });
+		expect(routeKey(BYTE_PAGEDOWN, makeState({ previewScroll: 8 }), makeRuntime({ previewMaxScroll: 12 }))).toEqual({
+			kind: "preview_scroll",
+			delta: 4,
+		});
 	});
 
 	it("further PageDown presses at the bottom are swallowed so the next PageUp responds at once", () => {
-		expect(
-			routeKey(BYTE_PAGEDOWN, makeState({ previewScroll: 12 }), makeRuntime({ previewMaxScroll: 12 })),
-		).toEqual({ kind: "ignore" });
+		expect(routeKey(BYTE_PAGEDOWN, makeState({ previewScroll: 12 }), makeRuntime({ previewMaxScroll: 12 }))).toEqual({
+			kind: "ignore",
+		});
 	});
 
 	it("multi-select questions ignore the scroll keys (previews are single-select only)", () => {
