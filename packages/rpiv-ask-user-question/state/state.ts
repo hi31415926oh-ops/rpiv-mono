@@ -1,5 +1,5 @@
-import type { QuestionAnswer, QuestionData } from "../tool/types.js";
-import type { WrappingSelectItem } from "../view/components/wrapping-select.js";
+import type { QuestionAnswer, QuestionData } from "../tool/types.ts";
+import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 
 /**
  * Canonical state for the questionnaire dialog. Single source of truth — both the
@@ -41,7 +41,7 @@ export interface QuestionnaireState {
 	 * - Hosts with an `OverlayHandle` AND a raw `onTerminalInput` listener (real pi-tui):
 	 *   the `set_overlay_hidden` effect fully hides the overlay; the raw listener registered
 	 *   in `execute()` reopens it, because pi-tui routes no input to a hidden overlay.
-	 * - Hosts without the raw listener (or without a handle): the overlay stays visible and
+	 * - Inline presentation, or hosts without the raw listener/handle: the dialog stays visible and
 	 *   shrinks to a single hint row. The row keeps focus and input routing, so the same key
 	 *   expands it and Esc cancels, and the expand key never falls through to an underlying
 	 *   overlay (e.g. `/btw`). The session gates `set_overlay_hidden` on the listener's
@@ -77,4 +77,10 @@ export interface QuestionnaireRuntime {
 	previewMaxScroll: number | undefined;
 
 	collapseKey: string;
+	/** Key that opens the notes editor (`resolveNotesKey` output: `"n"` by default). */
+	notesKey: string;
+	/** Preview-scroll-up key spec (`resolvePreviewScrollUpKey` output: `"pageup"` by default, `"off"` disables). */
+	previewScrollUpKey: string;
+	/** Preview-scroll-down key spec (`resolvePreviewScrollDownKey` output: `"pagedown"` by default, `"off"` disables). */
+	previewScrollDownKey: string;
 }

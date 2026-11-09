@@ -20,11 +20,11 @@ import type {
 	LoopDef,
 	ResultProjection,
 	UnitSelector,
-} from "../api.js";
-import { requireNonEmptyString } from "../internal-utils.js";
-import { type AnyJudge, assertShape, isPanel, judgeShapeIssues } from "../judge.js";
-import type { Output } from "../output.js";
-import { panelShapeIssues } from "./panel.js";
+} from "../api.ts";
+import { requireNonEmptyString } from "../internal-utils.ts";
+import { type AnyJudge, assertShape, isPanel, judgeShapeIssues } from "../judge.ts";
+import type { Output } from "../output.ts";
+import { panelShapeIssues } from "./panel.ts";
 
 /** Default round cap when an `assess()` call omits `max`. Clamped by `run.maxIterations`. */
 export const DEFAULT_ASSESS_MAX = 8;
@@ -139,6 +139,10 @@ export interface FanoutOptions extends LoopOptionsBase {
 	 *  stage instead of advancing into a fan-in over an empty channel. Over-cap
 	 *  advancing generations never qualify; `failFast` wins when both are set. */
 	haltWhenAllFailed?: boolean;
+	/** Re-dispatch a soft-halted collect-all unit up to N more times — the
+	 *  whole per-unit dispatch re-runs; only the final attempt's output folds.
+	 *  Integer >= 1 (throws at construction). */
+	retryHaltedUnits?: number;
 	/** When set, the dispatcher appends `${depArtifactFlag} <path>` per direct
 	 *  `Unit.deps` entry with a non-failed filled slot — handing the dependent unit
 	 *  its dependencies' published artifacts (e.g. `"--upstream"`). Non-empty string;
@@ -182,6 +186,9 @@ export function fanout(opts: FanoutOptions): FanoutLoop {
 		...(opts.depArtifactFlag !== undefined ? { depArtifactFlag: checkedDepArtifactFlag(opts.depArtifactFlag) } : {}),
 		...(opts.failFast !== undefined ? { failFast: opts.failFast } : {}),
 		...(opts.haltWhenAllFailed !== undefined ? { haltWhenAllFailed: opts.haltWhenAllFailed } : {}),
+		...(opts.retryHaltedUnits !== undefined
+			? { retryHaltedUnits: checkedPositiveInt(opts.retryHaltedUnits, "fanout(): retryHaltedUnits") }
+			: {}),
 	};
 }
 

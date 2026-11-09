@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +23,13 @@ import {
 	summarizeRun,
 	type WorkflowHeader,
 	type WorkflowStage,
-} from "./state/index.js";
+} from "./state/index.ts";
+
+// Pass-through by default; the collision test scripts the draws.
+vi.mock("node:crypto", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:crypto")>();
+	return { ...actual, randomBytes: vi.fn(actual.randomBytes) };
+});
 
 let tmpDir: string;
 
@@ -50,10 +57,13 @@ describe("generateRunId", () => {
 		expect(generateRunId(fixed)).toMatch(/^2026-05-20_15-30-45-[0-9a-f]{4}$/);
 	});
 
-	it("generates distinct ids for two same-second calls (collision protection)", () => {
+	it("draws a fresh suffix per call, so same-second calls get distinct ids (collision protection)", () => {
+		// Scripted draws: 20 real draws from 65536 suffixes collide about once
+		// in 345 runs, so the assertion cannot rest on chance.
+		let draw = 0;
+		vi.mocked(randomBytes).mockImplementation(((size: number) => Buffer.alloc(size, draw++)) as never);
 		const fixed = new Date(2026, 4, 20, 15, 30, 45);
 		const ids = new Set(Array.from({ length: 20 }, () => generateRunId(fixed)));
-		// 20 calls, 65536 possible suffixes — duplicates are astronomically unlikely.
 		expect(ids.size).toBe(20);
 	});
 });
@@ -812,6 +822,133 @@ describe("summarizeRun", () => {
 		// A pass-through decision ("grade") mid-trail, then the terminal stage row
 		// — the routing row is not the tail, so the outcome stays "completed".
 		const runId = "routing-mid-trail";
+		appendHeader(tmpDir, { runId, workflow: "ship", input: "x", ts: "2026" });
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 4,
+			stage: "plan-cite-check",
+			status: "completed",
+			ts: "t1",
+		});
+		appendRoutingDecision(tmpDir, runId, {
+			type: "routing",
+			fromStageIndex: 4,
+			fromStage: "plan-cite-check",
+			decision: "grade",
+			ts: "t2",
+		});
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 5,
+			stage: "commit",
+			skill: "commit",
+			status: "completed",
+			ts: "t3",
+		});
+		expect(summarizeRun(tmpDir, runId)).toEqual({
+			outcome: "completed",
+			artifacts: [],
+			workflow: "ship",
+		} satisfies RunRecap);
+	});
+
+	it("projects note-bearing FORWARD routing rows onto routingNotes in trail order", () => {
+		// Two gates explained themselves mid-run (the pass-through floors); both
+		// notes ride the recap verbatim, in the order they were decided — on EVERY
+		// outcome (completed here; a failed tail would keep them too).
+		const runId = "routing-notes-forward";
+		appendHeader(tmpDir, { runId, workflow: "build", input: "x", ts: "2026" });
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 4,
+			stage: "implement-scope-check",
+			status: "completed",
+			ts: "t1",
+		});
+		appendRoutingDecision(tmpDir, runId, {
+			type: "routing",
+			fromStageIndex: 4,
+			fromStage: "implement-scope-check",
+			decision: "reconcile",
+			note: "pass-through: implement-scope-check defers to validate",
+			ts: "t2",
+		});
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 5,
+			stage: "validate",
+			skill: "validate",
+			status: "completed",
+			ts: "t3",
+		});
+		appendRoutingDecision(tmpDir, runId, {
+			type: "routing",
+			fromStageIndex: 5,
+			fromStage: "validate",
+			decision: "commit",
+			note: "second hop note",
+			ts: "t4",
+		});
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 6,
+			stage: "commit",
+			skill: "commit",
+			status: "completed",
+			ts: "t5",
+		});
+		expect(summarizeRun(tmpDir, runId)?.routingNotes).toEqual([
+			"pass-through: implement-scope-check defers to validate",
+			"second hop note",
+		]);
+	});
+
+	it("excludes the stop row's note from routingNotes (the stopped refinement owns its single rendering)", () => {
+		// A forward note-bearing row PLUS a trailing stop row: routingNotes carries
+		// ONLY the forward note — the stop's note renders once, as failureReason.
+		const runId = "routing-notes-stop-excluded";
+		appendHeader(tmpDir, { runId, workflow: "build", input: "x", ts: "2026" });
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 4,
+			stage: "implement-scope-check",
+			status: "completed",
+			ts: "t1",
+		});
+		appendRoutingDecision(tmpDir, runId, {
+			type: "routing",
+			fromStageIndex: 4,
+			fromStage: "implement-scope-check",
+			decision: "reconcile",
+			note: "pass-through: implement-scope-check defers to validate",
+			ts: "t2",
+		});
+		appendStage(tmpDir, runId, {
+			session: null,
+			stageNumber: 5,
+			stage: "grade (plans-dim-completeness)",
+			skill: "grade",
+			status: "completed",
+			ts: "t3",
+		});
+		appendRoutingDecision(tmpDir, runId, {
+			type: "routing",
+			fromStageIndex: 5,
+			fromStage: "grade",
+			decision: "stop",
+			note: "completeness failed (medium)",
+			ts: "t4",
+		});
+		const recap = summarizeRun(tmpDir, runId);
+		expect(recap?.outcome).toBe("stopped");
+		expect(recap?.failureReason).toBe("stopped at grade: completeness failed (medium)");
+		expect(recap?.routingNotes).toEqual(["pass-through: implement-scope-check defers to validate"]);
+	});
+
+	it("routingNotes is absent (never []) when no forward row carries a note", () => {
+		// A note-less forward row contributes nothing — the projected recap stays
+		// byte-identical to the pre-§1.5 shape (no routingNotes key at all).
+		const runId = "routing-notes-none";
 		appendHeader(tmpDir, { runId, workflow: "ship", input: "x", ts: "2026" });
 		appendStage(tmpDir, runId, {
 			session: null,

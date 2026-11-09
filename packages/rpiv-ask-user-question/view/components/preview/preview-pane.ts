@@ -1,8 +1,10 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { QuestionData } from "../../../tool/types.js";
-import type { StatefulView } from "../../stateful-view.js";
-import type { OptionListView } from "../option-list-view.js";
-import type { PreviewBlockRenderer } from "./preview-block-renderer.js";
+import type { QuestionData } from "../../../tool/types.ts";
+import { windowLines } from "../../scroll-window.ts";
+import type { StatefulView } from "../../stateful-view.ts";
+import type { OptionListView } from "../option-list-view.ts";
+import type { NotesAffordance, PreviewBlockRenderer } from "./preview-block-renderer.ts";
 import {
 	bodyWidths,
 	columnWidths,
@@ -10,7 +12,10 @@ import {
 	PREVIEW_PADDING_LEFT,
 	type PreviewLayoutMode,
 	STACKED_GAP_ROWS,
-} from "./preview-layout-decider.js";
+} from "./preview-layout-decider.ts";
+
+/** Smallest preview box worth showing: top border, one content line, bottom border. */
+const MIN_BOX_ROWS = 3;
 
 // ----- Re-exports for test imports — keep `./preview-pane.js` as the public surface -----
 export {
@@ -18,8 +23,8 @@ export {
 	MAX_PREVIEW_HEIGHT_STACKED,
 	NO_PREVIEW_TEXT,
 	NOTES_AFFORDANCE_OVERHEAD,
-} from "./markdown-content-cache.js";
-export { NOTES_AFFORDANCE_TEXT, PreviewBlockRenderer } from "./preview-block-renderer.js";
+} from "./markdown-content-cache.ts";
+export { NOTES_AFFORDANCE_TEXT, NOTES_EDIT_AFFORDANCE_TEXT, PreviewBlockRenderer } from "./preview-block-renderer.ts";
 export {
 	BORDER_HORIZONTAL_OVERHEAD,
 	BORDER_INNER_PADDING_HORIZONTAL,
@@ -27,13 +32,13 @@ export {
 	BOX_MIN_CONTENT_WIDTH,
 	renderBorderedBox,
 	stripFenceMarkers,
-} from "./preview-box-renderer.js";
+} from "./preview-box-renderer.ts";
 export {
 	PREVIEW_COLUMN_GAP,
 	PREVIEW_MIN_WIDTH,
 	PREVIEW_PADDING_LEFT,
 	STACKED_GAP_ROWS,
-} from "./preview-layout-decider.js";
+} from "./preview-layout-decider.ts";
 
 /**
  * Per-tick projection of PreviewPane state. Replaces the prior
@@ -46,6 +51,8 @@ export {
  */
 export interface PreviewPaneProps {
 	notesVisible: boolean;
+	/** The question carries a saved note — the affordance offers to edit it rather than add one (#197). */
+	hasNote: boolean;
 	selectedIndex: number;
 	focused: boolean;
 	/**
@@ -64,6 +71,7 @@ export interface PreviewPaneProps {
 
 export interface PreviewPaneConfig {
 	question: QuestionData;
+	theme: Theme;
 	getTerminalWidth: () => number;
 	optionListView: OptionListView;
 	previewBlock: PreviewBlockRenderer;
@@ -86,7 +94,15 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 	private readonly getTerminalWidth: () => number;
 	private readonly optionListView: OptionListView;
 	private readonly previewBlock: PreviewBlockRenderer;
+	private readonly theme: Theme;
 	private props: PreviewPaneProps;
+	/**
+	 * Rows the dialog can give this body this frame, set by `DialogView` before each render;
+	 * undefined when unconstrained. A body taller than this fits itself instead of being cut
+	 * by the dialog's scroll window: the options scroll within their column around the focused
+	 * option, and the preview box shrinks but always closes (#210).
+	 */
+	private rowAllowance: number | undefined;
 	/**
 	 * Render-report channel for scroll de-accumulation: after every preview render,
 	 * `lastRenderedScroll` holds the offset the preview block actually used (clamped)
@@ -112,7 +128,8 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		this.getTerminalWidth = config.getTerminalWidth;
 		this.optionListView = config.optionListView;
 		this.previewBlock = config.previewBlock;
-		this.props = { notesVisible: false, selectedIndex: 0, focused: false, inputMode: false, previewScroll: 0 };
+		this.theme = config.theme;
+		this.props = { notesVisible: false, hasNote: false, selectedIndex: 0, focused: false, inputMode: false };
 	}
 
 	setGlobalLeftWidth(getter: (paneWidth: number) => number): void {
@@ -127,6 +144,18 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		this.props = props;
 	}
 
+	/** Render-time geometry from `DialogView` (not canonical state, so not a prop). */
+	/** The notes affordance under the preview: shown while focused with the notes editor closed. */
+	private notesAffordance(): NotesAffordance {
+		const { focused, notesVisible, hasNote } = this.props;
+		if (!focused || notesVisible) return "none";
+		return hasNote ? "edit" : "add";
+	}
+
+	setRowAllowance(rows: number | undefined): void {
+		this.rowAllowance = rows;
+	}
+
 	handleInput(_data: string): void {}
 
 	invalidate(): void {
@@ -134,18 +163,26 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		this.optionListView.invalidate();
 	}
 
-		render(width: number): string[] {
+	private clearScrollReport(): void {
+		this.lastRenderedScroll = 0;
+		this.renderedScrollForIndex = -1;
+		this.lastTotalHidden = 0;
+	}
+
+	private captureScrollReport(): void {
+		this.lastRenderedScroll = this.previewBlock.lastClampedScroll;
+		this.lastTotalHidden = this.previewBlock.lastTotalHidden;
+		this.renderedScrollForIndex = this.props.selectedIndex;
+	}
+
+	render(width: number): string[] {
 		if (this.question.multiSelect === true) {
-			this.lastRenderedScroll = 0;
-			this.renderedScrollForIndex = -1;
-			this.lastTotalHidden = 0;
+			this.clearScrollReport();
 			return this.optionListView.render(width);
 		}
 		// Spec: hide the preview pane entirely when no option carries a `preview`.
 		if (!this.previewBlock.hasAnyPreview()) {
-			this.lastRenderedScroll = 0;
-			this.renderedScrollForIndex = -1;
-			this.lastTotalHidden = 0;
+			this.clearScrollReport();
 			return this.optionListView.render(width);
 		}
 		// `inputMode` (typing on the "other" custom-answer row): the preview is irrelevant —
@@ -153,37 +190,106 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		// render the option list at the full pane width instead of the cramped left column.
 		// Side-by-side + preview block resume verbatim on nav-away (inputMode clears).
 		if (this.props.inputMode) {
-			this.lastRenderedScroll = 0;
-			this.renderedScrollForIndex = -1;
-			this.lastTotalHidden = 0;
+			this.clearScrollReport();
 			return this.optionListView.render(width);
 		}
 
-		const mode = decideLayout(this.getTerminalWidth(), width);
-		if (mode === "side-by-side") {
-			const out = this.renderSideBySide(width, mode);
-			this.lastRenderedScroll = this.previewBlock.lastClampedScroll;
-			this.lastTotalHidden = this.previewBlock.lastTotalHidden;
-			this.renderedScrollForIndex = this.props.selectedIndex;
-			return out;
-		}
-
-		// Stacked: options + blank gap + preview block.
-		const out = [
-			...this.optionListView.render(width),
-			...Array(STACKED_GAP_ROWS).fill(""),
-			...this.previewBlock.renderBlock(
-				width,
-				this.props.selectedIndex,
-				mode,
-				this.props.focused,
-				this.props.notesVisible,
-				this.props.previewScroll ?? 0,
-			),
-		];
-		this.lastRenderedScroll = this.previewBlock.lastClampedScroll;
-		this.renderedScrollForIndex = this.props.selectedIndex;
+		const out = this.layout(width).lines;
+		this.captureScrollReport();
 		return out;
+	}
+
+	/**
+	 * Options + preview for the current layout mode, fitted to `rowAllowance` when set. The
+	 * returned focus range is in the same row coordinates as `lines`, so `render`,
+	 * `focusedItemRowRange` and `naturalHeight` agree by construction.
+	 */
+	private layout(width: number): { lines: string[]; focus: [number, number] | undefined } {
+		const mode = decideLayout(this.getTerminalWidth(), width);
+		return mode === "side-by-side" ? this.layoutSideBySide(width, mode) : this.layoutStacked(width, mode);
+	}
+
+	/**
+	 * Stacked: options, a blank gap, then the preview block. When that exceeds the allowance,
+	 * keep the focused option (plus a row either side for the overflow arrows) and give the
+	 * preview the rest, so the preview of the option being considered stays in view instead
+	 * of falling below the dialog's scroll window.
+	 */
+	private layoutStacked(
+		width: number,
+		mode: PreviewLayoutMode,
+	): { lines: string[]; focus: [number, number] | undefined } {
+		const { selectedIndex } = this.props;
+		const affordance = this.notesAffordance();
+		const options = this.optionListView.render(width);
+		const focus = this.optionListView.focusedItemRowRange(width);
+		const gap = Array<string>(STACKED_GAP_ROWS).fill("");
+		const allowance = this.rowAllowance;
+		const fullBlock = this.previewBlock.blockHeight(width, selectedIndex, mode);
+		const scroll = this.props.previewScroll ?? 0;
+		if (allowance === undefined || options.length + STACKED_GAP_ROWS + fullBlock <= allowance) {
+			return {
+				lines: [
+					...options,
+					...gap,
+					...this.previewBlock.renderBlock(width, selectedIndex, mode, affordance, undefined, scroll),
+				],
+				focus,
+			};
+		}
+		// Prefer keeping a row either side of the focused option for the overflow arrows; give
+		// those up only when they are what keeps the preview box (border + 1 line) from fitting.
+		const focusRows = focus ? focus[1] - focus[0] : 1;
+		const previewRowsWith = (optionsFloor: number) =>
+			Math.min(fullBlock, allowance - STACKED_GAP_ROWS - Math.min(options.length, optionsFloor));
+		const roomy = previewRowsWith(focusRows + 2);
+		const previewRows = roomy >= MIN_BOX_ROWS ? roomy : previewRowsWith(focusRows);
+		const block = this.previewBlock.renderBlock(width, selectedIndex, mode, affordance, previewRows, scroll);
+		const optionRows = allowance - (block.length > 0 ? STACKED_GAP_ROWS + block.length : 0);
+		const windowed = windowLines(options, Math.max(1, optionRows), focus, this.theme);
+		return {
+			lines: block.length > 0 ? [...windowed.lines, ...gap, ...block] : windowed.lines,
+			focus: windowed.focus,
+		};
+	}
+
+	/**
+	 * Side-by-side: options column left, preview block right. Under an allowance the options
+	 * column scrolls around the focused option and the preview block shrinks, so neither
+	 * column exceeds it and the dialog never slices through the preview box.
+	 */
+	private layoutSideBySide(
+		width: number,
+		mode: PreviewLayoutMode,
+	): { lines: string[]; focus: [number, number] | undefined } {
+		const adaptiveLeft = this.getAdaptiveLeft(width);
+		const { leftWidth, rightWidth, gap } = columnWidths(width, adaptiveLeft);
+		const allowance = this.rowAllowance;
+		const left =
+			allowance === undefined
+				? {
+						lines: this.optionListView.render(leftWidth),
+						focus: this.optionListView.focusedItemRowRange(leftWidth),
+					}
+				: windowLines(
+						this.optionListView.render(leftWidth),
+						allowance,
+						this.optionListView.focusedItemRowRange(leftWidth),
+						this.theme,
+					);
+		const rightLines = this.renderPaddedPreviewLines(rightWidth, mode, allowance);
+		const rows = Math.max(left.lines.length, rightLines.length);
+		const gapStr = " ".repeat(gap);
+		const out: string[] = [];
+		for (let i = 0; i < rows; i++) {
+			const leftRaw = left.lines[i] ?? "";
+			const rightRaw = rightLines[i] ?? "";
+			const leftClamped = truncateToWidth(leftRaw, leftWidth, "");
+			const leftPad = " ".repeat(Math.max(0, leftWidth - visibleWidth(leftClamped)));
+			const joined = `${leftClamped}${leftPad}${gapStr}${rightRaw}`;
+			out.push(truncateToWidth(joined, width, ""));
+		}
+		return { lines: out, focus: left.focus };
 	}
 
 	focusedItemRowRange(width: number): [number, number] {
@@ -192,11 +298,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		// `inputMode`: compute the focused row range against the FULL pane width (not the
 		// side-by-side leftWidth), mirroring `render`'s full-width option list.
 		if (this.props.inputMode) return this.optionListView.focusedItemRowRange(width);
-		const mode = decideLayout(this.getTerminalWidth(), width);
-		if (mode === "stacked") return this.optionListView.focusedItemRowRange(width);
-		const adaptiveLeft = this.getAdaptiveLeft(width);
-		const { leftWidth } = columnWidths(width, adaptiveLeft);
-		return this.optionListView.focusedItemRowRange(leftWidth);
+		return this.layout(width).focus ?? [0, 1];
 	}
 
 	naturalHeight(width: number): number {
@@ -205,6 +307,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		// `inputMode`: height is the full-width option list only (no preview block) — preserves
 		// the `naturalHeight === render.length` parity invariant.
 		if (this.props.inputMode) return this.optionListView.render(width).length;
+		if (this.rowAllowance !== undefined) return this.layout(width).lines.length;
 		const mode = decideLayout(this.getTerminalWidth(), width);
 		const adaptiveLeft = this.getAdaptiveLeft(width);
 		const { optionsWidth, previewWidth } = bodyWidths(width, mode, adaptiveLeft);
@@ -229,38 +332,23 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 			const h = this.previewBlock.blockHeight(previewWidth, i, mode);
 			if (h > maxPreviewBlock) maxPreviewBlock = h;
 		}
-		if (mode === "side-by-side") return Math.max(optionsHeight, maxPreviewBlock);
-		return optionsHeight + STACKED_GAP_ROWS + maxPreviewBlock;
+		const max =
+			mode === "side-by-side"
+				? Math.max(optionsHeight, maxPreviewBlock)
+				: optionsHeight + STACKED_GAP_ROWS + maxPreviewBlock;
+		// A fitted body never exceeds the allowance, whichever option is focused.
+		return this.rowAllowance === undefined ? max : Math.min(max, this.rowAllowance);
 	}
 
-	private renderSideBySide(width: number, mode: PreviewLayoutMode): string[] {
-		const adaptiveLeft = this.getAdaptiveLeft(width);
-		const { leftWidth, rightWidth, gap } = columnWidths(width, adaptiveLeft);
-		const leftLines = this.optionListView.render(leftWidth);
-		const rightLines = this.renderPaddedPreviewLines(rightWidth, mode, this.props.previewScroll ?? 0);
-		const rows = Math.max(leftLines.length, rightLines.length);
-		const gapStr = " ".repeat(gap);
-		const out: string[] = [];
-		for (let i = 0; i < rows; i++) {
-			const leftRaw = leftLines[i] ?? "";
-			const rightRaw = rightLines[i] ?? "";
-			const leftClamped = truncateToWidth(leftRaw, leftWidth, "");
-			const leftPad = " ".repeat(Math.max(0, leftWidth - visibleWidth(leftClamped)));
-			const joined = `${leftClamped}${leftPad}${gapStr}${rightRaw}`;
-			out.push(truncateToWidth(joined, width, ""));
-		}
-		return out;
-	}
-
-	private renderPaddedPreviewLines(colWidth: number, mode: PreviewLayoutMode, scrollOffset: number): string[] {
+	private renderPaddedPreviewLines(colWidth: number, mode: PreviewLayoutMode, maxRows: number | undefined): string[] {
 		const inner = Math.max(1, colWidth - PREVIEW_PADDING_LEFT);
 		const contentLines = this.previewBlock.renderBlock(
 			inner,
 			this.props.selectedIndex,
 			mode,
-			this.props.focused,
-			this.props.notesVisible,
-			scrollOffset,
+			this.notesAffordance(),
+			maxRows,
+			this.props.previewScroll ?? 0,
 		);
 		const boxWidth = Math.max(1, visibleWidth(contentLines[0] ?? ""));
 		const boxAlignedPad = Math.max(PREVIEW_PADDING_LEFT, colWidth - boxWidth);

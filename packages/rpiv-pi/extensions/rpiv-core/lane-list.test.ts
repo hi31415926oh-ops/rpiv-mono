@@ -8,8 +8,8 @@ import {
 	renderLaneList,
 	renderRecap,
 	renderStageBreakdown,
-} from "./lane-list.js";
-import { formatTokens } from "./lane-usage.js";
+} from "./lane-list.ts";
+import { formatTokens } from "./lane-usage.ts";
 import {
 	__resetRunLaneRegistry,
 	captureFinalSnapshot,
@@ -24,8 +24,8 @@ import {
 	setLaneStatus,
 	setRecap,
 	setUnitStarted,
-} from "./run-lane-registry.js";
-import { __resetSubagentUsage, recordSubagentCompletion } from "./subagent-usage.js";
+} from "./run-lane-registry.ts";
+import { __resetSubagentUsage, recordSubagentCompletion } from "./subagent-usage.ts";
 
 /**
  * Identity theme — fg/bg/bold return their text unchanged so a rendered line reads
@@ -463,12 +463,10 @@ describe("renderStageBreakdown — per-stage token breakdown", () => {
 
 	it("renders a prior stage from folded stageUsage (units already cleared)", () => {
 		recordRun("run-1", "ship");
-		// Stage A: fold its tokens, then clear units (simulating a transition).
+		// Stage A, then a transition: clearUnitLanes banks its tokens into stageUsage and empties units.
 		setLaneProgress("run-1", { stageName: "plan", phase: "running" });
 		seedOrchestratorUsage("run-1", 1000, 0);
-		foldStageUsage("run-1"); // → stageUsage["plan"] = {input:1000,...}
-		// clearUnitLanes empties units (the transition always pairs fold+clear); stageUsage survives.
-		clearUnitLanes("run-1");
+		clearUnitLanes("run-1"); // → stageUsage["plan"] = {input:1000,...}
 		const lines = renderStageBreakdown(identityTheme, W, "run-1");
 		const planLine = lines.find((l) => l.includes("plan")) ?? "";
 		expect(planLine).toContain("plan");
@@ -617,6 +615,49 @@ describe("renderRecap — end-of-run summary", () => {
 		setRecap("run-1", { outcome: "aborted", artifacts: [] });
 		expect(renderRecap(identityTheme, W, "run-1")).toEqual([]);
 	});
+
+	it("renders routingNotes as dim parts ordered after the artifact arrow and before the ⚠ reason", () => {
+		recordRun("run-1", "build");
+		setRecap("run-1", {
+			outcome: "failed",
+			failureReason: "grade exploded",
+			artifacts: [".rpiv/artifacts/builds/b.md"],
+			routingNotes: ["pass-through: implement-scope-check defers to validate"],
+		});
+		// Encoding theme: fg(c, s) → "c:s", so the dim part is observable. One
+		// joined line — arrow, then note, then reason.
+		const lines = renderRecap(encTheme, W, "run-1");
+		expect(lines.length).toBe(1);
+		const out = lines[0] as string;
+		const arrowIdx = out.indexOf("→ builds/b.md");
+		const noteIdx = out.indexOf("dim:pass-through: implement-scope-check defers to validate");
+		const reasonIdx = out.indexOf("⚠ grade exploded");
+		expect(arrowIdx).toBeGreaterThanOrEqual(0);
+		expect(noteIdx).toBeGreaterThan(arrowIdx);
+		expect(reasonIdx).toBeGreaterThan(noteIdx);
+	});
+
+	it("renders routingNotes alone on an artifact-less recap (still a single line)", () => {
+		recordRun("run-1", "build");
+		setRecap("run-1", {
+			outcome: "completed",
+			artifacts: [],
+			routingNotes: ["pass-through: implement-scope-check defers to validate"],
+		});
+		expect(renderRecap(identityTheme, W, "run-1")).toEqual([
+			"pass-through: implement-scope-check defers to validate",
+		]);
+	});
+
+	it("renders byte-identically when routingNotes is absent (no note parts leak)", () => {
+		recordRun("run-1", "ship");
+		setRecap("run-1", { outcome: "failed", failureReason: "x", artifacts: ["a.md"] });
+		const lines = renderRecap(identityTheme, W, "run-1");
+		expect(lines.length).toBe(1);
+		expect(lines[0]).toContain("→ a.md");
+		expect(lines[0]).toContain("⚠ x");
+		expect(lines[0]).not.toContain("pass-through");
+	});
 });
 
 describe("renderLaneList — run grand total", () => {
@@ -714,8 +755,7 @@ describe("renderLaneList — run grand total", () => {
 		recordRun("run-1", "ship", { workflow: "ship" });
 		setLaneProgress("run-1", { stageName: "plan", phase: "running" });
 		seedOrchestratorUsage("run-1", 1000, 500); // stage A: ↑1.0k ↓500
-		foldStageUsage("run-1"); // the bridge's transition pairing: fold …
-		clearUnitLanes("run-1"); // … then clear
+		clearUnitLanes("run-1"); // stage transition — banks stage A's tokens, then drops its units
 		setLaneProgress("run-1", { stageName: "build", phase: "running" });
 		seedOrchestratorUsage("run-1", 200, 100); // stage B (current, live units): ↑200 ↓100
 		const lines = renderLaneList(identityTheme, W, { active: false, selection: 0, frame: 0, laneCap: LANE_CAP });

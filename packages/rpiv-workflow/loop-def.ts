@@ -8,9 +8,9 @@
  * Leaf-ish: imports only types from judge/output/handle.
  */
 
-import type { Artifact } from "./handle.js";
-import type { AnyJudge } from "./judge.js";
-import type { Output, RunView } from "./output.js";
+import type { Artifact } from "./handle.ts";
+import type { AnyJudge } from "./judge.ts";
+import type { Output, RunView } from "./output.ts";
 
 /**
  * One unit of loop work — the single unit type for all three loop kinds.
@@ -248,6 +248,23 @@ export interface FanoutLoop extends LoopCommon {
 	 * outputs; the chain advances).
 	 */
 	haltWhenAllFailed?: boolean;
+	/**
+	 * Re-dispatch a soft-halted collect-all unit (a failed sentinel in its
+	 * slot) up to `retryHaltedUnits` MORE times. One attempt = the unit's
+	 * whole dispatch: unit start, pre-attempt snapshot, session build,
+	 * execution — so a retry's disk-first collection sees only what the
+	 * retry's own session wrote, and the attempt-1 failure memo rides the
+	 * re-dispatch prompt as the additive suffix (same unit prompt otherwise).
+	 * The fold sees only the FINAL attempt's output. Integer >= 1 when
+	 * present; absent ⇒ exactly one dispatch (the prior contract).
+	 * Collect-all units only — inert under `failFast` (a fail-fast halt
+	 * terminates the run; there is nothing left to re-dispatch into).
+	 * Retries complete inside the per-unit worker before the generation
+	 * folds, so a set `haltWhenAllFailed` close sees only final attempts —
+	 * the halt fires only when every unit's FINAL attempt is a failed
+	 * sentinel; a unit that recovers on retry keeps the generation alive.
+	 */
+	retryHaltedUnits?: number;
 	/**
 	 * When set, the dispatcher injects each completed dependency's published
 	 * artifact path into the dependent unit's prompt as `${depArtifactFlag} <path>`
